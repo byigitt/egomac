@@ -316,9 +316,6 @@ private struct StopCard: View {
     let canDelete: Bool
     let onDelete: () -> Void
 
-    @State private var newLineDraft: String = ""
-    @FocusState private var addLineFocused: Bool
-
     @State private var stopQuery: String = ""
     @FocusState private var stopQueryFocused: Bool
     @State private var lineQuery: String = ""
@@ -903,44 +900,6 @@ private struct LineChip: View {
             withAnimation(.easeOut(duration: 0.12)) { isHovered = hovering }
         }
         .transition(.scale(scale: 0.85).combined(with: .opacity))
-    }
-}
-
-private struct AddLineChip: View {
-    @Binding var text: String
-    var focused: FocusState<Bool>.Binding
-    var onSubmit: () -> Void
-    @State private var isHovered = false
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "plus")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(focused.wrappedValue ? Color.accentColor : .secondary)
-            TextField("hat", text: $text)
-                .textFieldStyle(.plain)
-                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                .focused(focused)
-                .onSubmit(onSubmit)
-                .frame(width: 56)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .background(
-            Capsule(style: .continuous)
-                .fill(focused.wrappedValue
-                      ? Color.accentColor.opacity(0.10)
-                      : Color.primary.opacity(isHovered ? 0.05 : 0.02))
-        )
-        .overlay(
-            Capsule(style: .continuous)
-                .strokeBorder(
-                    focused.wrappedValue ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.15),
-                    style: StrokeStyle(lineWidth: 1, dash: focused.wrappedValue ? [] : [2.5, 2.5])
-                )
-        )
-        .onHover { isHovered = $0 }
-        .animation(.easeOut(duration: 0.15), value: focused.wrappedValue)
     }
 }
 

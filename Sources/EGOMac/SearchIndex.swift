@@ -26,12 +26,24 @@ final class SearchIndex: ObservableObject {
     @Published private(set) var linesLoaded = false
     @Published private(set) var lineLoadError: String?
 
-    private var stops: [StopSearchResult] = []
-    private var lines: [LineSearchResult] = []
+    private struct IndexedStop {
+        let result: StopSearchResult
+        let normalizedName: String
+    }
 
-    /// Memoized last-query result so re-typing the same string is instant.
+    private struct IndexedLine {
+        let result: LineSearchResult
+        let normalizedLineNo: String
+        let normalizedRoute: String
+    }
+
+    private var stops: [IndexedStop] = []
+    private var lines: [IndexedLine] = []
+
+    /// Memoized query results so re-typing the same string is instant.
     private var stopQueryCache: [String: [StopSearchResult]] = [:]
     private var lineQueryCache: [String: [LineSearchResult]] = [:]
+    private var lineLoadTask: Task<Void, Never>?
 
     private init() {
         loadStops()
@@ -56,7 +68,8 @@ final class SearchIndex: ObservableObject {
             return
         }
         self.stops = parsed.stops.map {
-            StopSearchResult(stopNo: $0.r, name: $0.n)
+            let result = StopSearchResult(stopNo: $0.r, name: $0.n)
+            return IndexedStop(result: result, normalizedName: Self.normalize($0.n))
         }
         self.stopsLoaded = true
         DebugLog.log("search: loaded \(stops.count) stops (embedded)")
@@ -82,10 +95,12 @@ final class SearchIndex: ObservableObject {
     func searchStops(_ query: String, limit: Int = 12) -> [StopSearchResult] {
         let q = Self.normalize(query)
         guard !q.isEmpty else { return [] }
-        if let cached = stopQueryCache[q] { return cached }
+        let cacheKey = "\(limit)|\(q)"
+        if let cached = stopQueryCache[cacheKey] { return cached }
 
         let isNumeric = q.allSatisfy { $0.isNumber }
-        let scored: [(StopSearchResult, Int)] = stops.compactMap { stop in
+        let scored: [(StopSearchResult, Int)] = stops.compactMap { indexed in
+            let stop = indexed.result
             // Numeric: prefix-match on ref
             if isNumeric {
                 if stop.stopNo.hasPrefix(q) { return (stop, 0) }
@@ -93,7 +108,7 @@ final class SearchIndex: ObservableObject {
                 return nil
             }
             // Text: substring on name (case+diacritic insensitive)
-            let nName = Self.normalize(stop.name)
+            let nName = indexed.normalizedName
             if nName == q { return (stop, 0) }
             if nName.hasPrefix(q) { return (stop, 10) }
             if nName.contains(q) { return (stop, 50) }
@@ -108,7 +123,7 @@ final class SearchIndex: ObservableObject {
             .prefix(limit)
             .map { $0.0 }
         let result = Array(sorted)
-        stopQueryCache[q] = result
+        stopQueryCache[cacheKey] = result
         return result
     }
 
@@ -117,26 +132,44 @@ final class SearchIndex: ObservableObject {
     /// Fetch the full line list (cached). Safe to call repeatedly.
     func ensureLinesLoaded() async {
         if linesLoaded { return }
-        do {
-            let html = try await Self.fetchLineListHTML()
-            self.lines = Self.parseLineOptions(html: html)
-            self.linesLoaded = true
-            self.lineLoadError = nil
-            DebugLog.log("search: loaded \(lines.count) lines")
-        } catch {
-            self.lineLoadError = error.localizedDescription
-            DebugLog.log("search: line list fetch failed: \(error.localizedDescription)")
+        if let lineLoadTask {
+            await lineLoadTask.value
+            return
         }
+
+        let task = Task { @MainActor in
+            defer { lineLoadTask = nil }
+            do {
+                let html = try await Self.fetchLineListHTML()
+                self.lines = Self.parseLineOptions(html: html).map {
+                    IndexedLine(
+                        result: $0,
+                        normalizedLineNo: Self.normalize($0.lineNo),
+                        normalizedRoute: Self.normalize($0.route)
+                    )
+                }
+                self.linesLoaded = true
+                self.lineLoadError = nil
+                DebugLog.log("search: loaded \(lines.count) lines")
+            } catch {
+                self.lineLoadError = error.localizedDescription
+                DebugLog.log("search: line list fetch failed: \(error.localizedDescription)")
+            }
+        }
+        lineLoadTask = task
+        await task.value
     }
 
     func searchLines(_ query: String, limit: Int = 12) -> [LineSearchResult] {
         let q = Self.normalize(query)
         guard !q.isEmpty else { return [] }
-        if let cached = lineQueryCache[q] { return cached }
+        let cacheKey = "\(limit)|\(q)"
+        if let cached = lineQueryCache[cacheKey] { return cached }
 
-        let scored: [(LineSearchResult, Int)] = lines.compactMap { line in
-            let nLine = Self.normalize(line.lineNo)
-            let nRoute = Self.normalize(line.route)
+        let scored: [(LineSearchResult, Int)] = lines.compactMap { indexed in
+            let line = indexed.result
+            let nLine = indexed.normalizedLineNo
+            let nRoute = indexed.normalizedRoute
             // Exact match
             if nLine == q { return (line, 0) }
             if nLine.hasPrefix(q) { return (line, 5) }
@@ -150,7 +183,7 @@ final class SearchIndex: ObservableObject {
             .prefix(limit)
             .map { $0.0 }
         let result = Array(sorted)
-        lineQueryCache[q] = result
+        lineQueryCache[cacheKey] = result
         return result
     }
 

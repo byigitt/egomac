@@ -1,7 +1,6 @@
 import Foundation
 
 struct Bus: Identifiable, Hashable {
-    let id = UUID()
     let line: String              // "481" or "263-7"
     let route: String             // route description
     let etaMin: Int?              // nil → scheduled, not live-tracked
@@ -13,6 +12,13 @@ struct Bus: Identifiable, Hashable {
     let isOzel: Bool              // ÖHO (private operator)
     let attributes: [String]      // ["Körüklü", "Engelli"]
     let stopNo: String            // which stop fed this row
+    let sourceIndex: Int          // position in the source response; disambiguates identical schedule rows
+
+    var id: String {
+        if let plate { return "\(stopNo):\(line):plate:\(plate)" }
+        if let vehicleId { return "\(stopNo):\(line):vehicle:\(vehicleId)" }
+        return "\(stopNo):\(line):scheduled:\(sourceIndex):\(route):\(scheduleNote ?? "")"
+    }
 
     var isLive: Bool { etaMin != nil }
 

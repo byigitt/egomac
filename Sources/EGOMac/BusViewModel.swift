@@ -122,22 +122,36 @@ final class BusViewModel: ObservableObject {
 
     // MARK: - Config mutations
 
-    /// Save & re-fetch (typically on settings change). Pass `restartFetch=false`
-    /// for view-only changes (active-stop switching) so we don't pound the API.
+    /// Save config and only hit the network when the set of valid stop numbers changes.
+    /// UI-only edits (name, active tab, notification toggle/threshold) update derived
+    /// state locally, which keeps Settings typing from spawning a fetch per keypress.
     func updateConfig(_ new: EGOConfig, restartFetch: Bool = true) {
-        let stopsChanged = Set(new.stops.map(\.stopNo)) != Set(config.stops.map(\.stopNo))
+        let old = config
+        let oldStops = Self.validStopNos(from: old)
+        let newStops = Self.validStopNos(from: new)
+        let stopNosChanged = Set(oldStops) != Set(newStops)
+        let alertInputsChanged = old.alertThresholdMin != new.alertThresholdMin
+            || Self.watchedSignature(old) != Self.watchedSignature(new)
+
         self.config = new
         ConfigLoader.save(new)
-        if restartFetch && stopsChanged {
+
+        guard restartFetch else {
+            updateTitle()
+            return
+        }
+
+        if stopNosChanged {
             // New stop set → drop dedup/error state for stops we no longer watch.
-            let live = Set(new.stops.map(\.stopNo))
+            let live = Set(newStops)
             busesByStop = busesByStop.filter { live.contains($0.key) }
             stopErrors = stopErrors.filter { live.contains($0.key) }
             notifiedVehicles.removeAll()
-        }
-        if restartFetch {
             Task { await self.refresh() }
         } else {
+            if alertInputsChanged, new.notificationsEnabled {
+                checkAlerts(busesByStop)
+            }
             updateTitle()
         }
     }
@@ -145,7 +159,12 @@ final class BusViewModel: ObservableObject {
     // MARK: - Refresh
 
     func refresh() async {
-        let stops = config.stops.map(\.stopNo)
+        guard !isRefreshing else {
+            DebugLog.log("refresh skipped: already running")
+            return
+        }
+
+        let stops = Self.validStopNos(from: config)
         guard !stops.isEmpty else {
             self.busesByStop = [:]
             self.stopErrors = [:]
@@ -157,6 +176,12 @@ final class BusViewModel: ObservableObject {
         defer { isRefreshing = false }
 
         let results = await client.fetchAll(stopNos: stops)
+        guard Set(Self.validStopNos(from: config)) == Set(stops) else {
+            DebugLog.log("refresh discarded: stop list changed while request was in flight")
+            Task { await self.refresh() }
+            return
+        }
+
         var newBuses: [String: [Bus]] = [:]
         var newErrors: [String: String] = [:]
 
@@ -175,7 +200,9 @@ final class BusViewModel: ObservableObject {
         self.stopErrors = newErrors
         self.lastUpdate = Date()
 
-        let liveCount = newBuses.values.flatMap { $0 }.filter { $0.etaMin != nil }.count
+        let liveCount = newBuses.values.reduce(0) { total, buses in
+            total + buses.lazy.filter { $0.etaMin != nil }.count
+        }
         DebugLog.log("refresh ok: \(stops.count) stop(s), \(liveCount) live")
 
         checkAlerts(newBuses)
@@ -186,16 +213,7 @@ final class BusViewModel: ObservableObject {
 
     /// Closest watched live ETA across **all** stops drives the menu bar title.
     private func updateTitle() {
-        var bestEta: Int?
-        for stop in config.stops {
-            let watched = stop.watchedSet
-            let buses = busesByStop[stop.stopNo] ?? []
-            for b in buses {
-                guard let eta = b.etaMin, watched.contains(b.line) else { continue }
-                if bestEta.map({ eta < $0 }) ?? true { bestEta = eta }
-            }
-        }
-        if let eta = bestEta {
+        if let eta = minWatchedEta() {
             // Keep title VERY short — MacBooks with notch lose long titles.
             let title = " \(eta)'"
             DebugLog.log("title → '\(title)'")
@@ -221,8 +239,8 @@ final class BusViewModel: ObservableObject {
                 seenKeys.insert(bus.dedupKey)
 
                 if eta <= threshold, !notifiedVehicles.contains(bus.dedupKey) {
-                    notifiedVehicles.insert(bus.dedupKey)
                     if config.notificationsEnabled {
+                        notifiedVehicles.insert(bus.dedupKey)
                         Notifier.notify(
                             title: "\(bus.line) yaklaşıyor — \(eta) dk",
                             body: "\(stop.displayName) · \(bus.route)"
@@ -239,6 +257,13 @@ final class BusViewModel: ObservableObject {
     // MARK: - Polling cadence
 
     private func nextInterval() -> Double {
+        guard let m = minWatchedEta() else { return 120 }
+        if m <= 8  { return 20 }
+        if m <= 15 { return 30 }
+        return 90
+    }
+
+    private func minWatchedEta() -> Int? {
         // Use the global minimum watched ETA across all stops.
         var minEta: Int?
         for stop in config.stops {
@@ -248,10 +273,24 @@ final class BusViewModel: ObservableObject {
                 if minEta.map({ eta < $0 }) ?? true { minEta = eta }
             }
         }
-        guard let m = minEta else { return 120 }
-        if m <= 8  { return 20 }
-        if m <= 15 { return 30 }
-        return 90
+        return minEta
+    }
+
+    private static func validStopNos(from config: EGOConfig) -> [String] {
+        var seen = Set<String>()
+        return config.stops.compactMap { stop in
+            let trimmed = stop.stopNo.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.count == 5, trimmed.allSatisfy(\.isNumber), seen.insert(trimmed).inserted else {
+                return nil
+            }
+            return trimmed
+        }
+    }
+
+    private static func watchedSignature(_ config: EGOConfig) -> [String] {
+        config.stops.map { stop in
+            "\(stop.id.uuidString)|\(stop.stopNo)|\(stop.watchedLines.sorted().joined(separator: ","))"
+        }
     }
 
     // MARK: - Sorting

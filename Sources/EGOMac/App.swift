@@ -21,7 +21,6 @@ struct EGOMacApp {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
-    private var eventMonitor: Any?
     private let viewModel = BusViewModel(config: ConfigLoader.load())
 
     func applicationDidFinishLaunching(_ notification: Notification) {

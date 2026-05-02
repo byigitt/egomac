@@ -11,8 +11,7 @@ let package = Package(
         .executableTarget(
             name: "EGOMac",
             dependencies: ["SwiftSoup"],
-            path: "Sources/EGOMac",
-            exclude: ["Resources"]
+            path: "Sources/EGOMac"
         ),
     ]
 )

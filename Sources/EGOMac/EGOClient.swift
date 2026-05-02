@@ -51,8 +51,11 @@ actor EGOClient {
     /// Fetch every stop in parallel and return a result-per-stop dictionary.
     /// Errors per stop are isolated — one bad stop doesn't fail the whole batch.
     func fetchAll(stopNos: [String]) async -> [String: Result<[Bus], Error>] {
-        await withTaskGroup(of: (String, Result<[Bus], Error>).self) { group in
-            for stop in stopNos {
+        var seen = Set<String>()
+        let uniqueStopNos = stopNos.filter { seen.insert($0).inserted }
+
+        return await withTaskGroup(of: (String, Result<[Bus], Error>).self) { group in
+            for stop in uniqueStopNos {
                 group.addTask {
                     do {
                         let buses = try await self.fetchBuses(stopNo: stop)
@@ -87,7 +90,7 @@ actor EGOClient {
         let cards = try doc.select("div.bus-card").array()
         var result: [Bus] = []
 
-        for card in cards {
+        for (sourceIndex, card) in cards.enumerated() {
             guard let badgeEl = try card.select("[class*=route-badge]").first() else { continue }
             let line = try badgeEl.text().trimmingCharacters(in: .whitespacesAndNewlines)
             let isOzel = (try badgeEl.className()).contains("ozel")
@@ -142,7 +145,8 @@ actor EGOClient {
                 scheduleNote: note,
                 isOzel: isOzel,
                 attributes: attributes,
-                stopNo: stopNo
+                stopNo: stopNo,
+                sourceIndex: sourceIndex
             )
             result.append(bus)
         }
