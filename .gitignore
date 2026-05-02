@@ -1,0 +1,36 @@
+# Swift Package Manager
+.build/
+*.xcodeproj/
+.swiftpm/
+Package.pins
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
+
+# Built artifacts
+*.icns.bak
+EGO Mac.app/
+*.dSYM/
+assets/AppIcon.iconset/
+# Source PNG used to build the master icon. Re-download from the EGO Cep'te
+# App Store listing if you want to regenerate. We don't redistribute their
+# raw artwork.
+assets/cepte-original.png
+assets/icon-1024.png
+
+# macOS
+.DS_Store
+
+# Personal config / runtime state
+~/.ego-mac/
+.ego-mac/
+
+# Ralph loop session state (not part of the project)
+.ralph/
+
+# Editor caches
+.vscode/
+.idea/
+*.swp
