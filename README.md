@@ -1,10 +1,29 @@
-# EGO Mac
+<p align="center">
+  <img src="assets/icon-256.png" alt="EGO Mac" width="160">
+</p>
 
-Native macOS menu bar app to track Ankara EGO buses, with EGO Cep'te–themed UI and 5-minutes-before-arrival notifications. Built with Swift + AppKit/SwiftUI.
+<h1 align="center">EGO Mac</h1>
 
-> Dock'ta yer kaplamayan, sağ üstte saatin yanında duran bir EGO Cep'te. Menü çubuğunda otobüsünün kaç dakika sonra geleceğini canlı görür, eşik altına düşünce bildirim alırsın.
+<p align="center">
+  Native macOS menu bar app to track Ankara EGO buses, with EGO Cep'te–themed UI<br>
+  and 5-minutes-before-arrival notifications. Built with Swift + AppKit/SwiftUI.
+</p>
 
-[![Swift 5.9+](https://img.shields.io/badge/swift-5.9+-orange)]() [![macOS 14+](https://img.shields.io/badge/macOS-14+-blue)]() [![License: MIT](https://img.shields.io/badge/license-MIT-green)]()
+<p align="center">
+  <a href="#"><img src="https://img.shields.io/badge/swift-5.9+-orange" alt="Swift 5.9+"></a>
+  <a href="#"><img src="https://img.shields.io/badge/macOS-14+-blue" alt="macOS 14+"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"></a>
+</p>
+
+<p align="center">
+  <em>Dock'ta yer kaplamayan, sağ üstte saatin yanında duran bir EGO Cep'te.</em><br>
+  <em>Menü çubuğunda otobüsünün kaç dakika sonra geleceğini canlı görür,<br>
+  eşik altına düşünce bildirim alırsın.</em>
+</p>
+
+<p align="center">
+  <img src="assets/screenshot-popover.png" alt="EGO Mac popover screenshot" width="380">
+</p>
 
 ## Özellikler
 
@@ -19,34 +38,7 @@ Native macOS menu bar app to track Ankara EGO buses, with EGO Cep'te–themed UI
 - **EGO Cep'te tema**: kırmızı header, yeşil/pembe satır arkaplanları (yaklaşıyor / "Gidiyor"), kare kırmızı badge.
 - **Açılışta otomatik başlama**: Login Items'a ekleyince Mac her açıldığında menü çubuğunda hazır.
 
-## Ekran görüntüsü
-
-```
-🍎 Helium  …                          🚌 4'  …
-                                       ↓ tıkla
-              ┌──────────────────────────────────┐
-              │ ⟳   Otobüs Nerede?      🔔 ⚙ ⏻ │
-              │     ANKARA BÜYÜKŞEHİR BELEDİYESİ │
-              ├──────────────────────────────────┤
-              │ 🔍 durak numarası ile sorgula …  │
-              ├──────────────────────────────────┤
-              │ 📍 12207  Güvenpark      🔔 2    │
-              ├──────────────────────────────────┤
-              │ [Ev (12207)] [İş (10940)] [+]    │
-              ├──────────────────────────────────┤
-              │ ┌──┐  UYANIŞ-KIZILAY-BALGAT      │
-              │ │481│  06 DDT 110 · Hız:0  4 dk  │
-              │ └──┘                       57/24 │
-              │                                  │
-              │ ┌──┐  ETLİK-BAKANLIK-BALGAT      │
-              │ │263-7│ 06 HO 1137  · Hız:34  Gidiyor│
-              │ └──┘                       57/57 │
-              └──────────────────────────────────┘
-```
-
 ## Kurulum
-
-### Hazır build (önerilen)
 
 ```bash
 git clone https://github.com/byigitt/egomac.git
