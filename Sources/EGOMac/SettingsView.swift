@@ -30,6 +30,7 @@ struct SettingsView: View {
                     notificationSection
                     thresholdSection
                     quietHoursSection
+                    catalogSection
                     Spacer(minLength: 4)
                 }
                 .padding(.horizontal, 18)
@@ -278,6 +279,73 @@ struct SettingsView: View {
             .padding(.vertical, 10)
             .background(softCardBackground)
         }
+    }
+
+    // MARK: Stop catalog (full EGO sweep)
+
+    /// Surface the on-disk EGO stop catalog state — size, age, refresh button.
+    /// `BusViewModel.refreshStopCatalog()` runs on background; the button
+    /// either kicks one off or shows the in-flight progress.
+    private var catalogSection: some View {
+        Section(label: "DURAK LİSTESİ") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "text.book.closed")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text(catalogStatusLine)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                if let p = viewModel.catalogProgress {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ProgressView(value: p)
+                            .progressViewStyle(.linear)
+                            .tint(EGOTheme.red)
+                        Text("%\(Int(p * 100)) indirildi — EGO sunucusu yanıt verdikçe ilerleyecek.")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    }
+                } else {
+                    Button(action: { Task { await viewModel.refreshStopCatalog() } }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                            Text("Listeyi yenile")
+                        }
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(EGOTheme.red)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(EGOTheme.red.opacity(0.10))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+                if let err = viewModel.catalogError {
+                    Text("Hata: \(err)")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(EGOTheme.red.opacity(0.8))
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(softCardBackground)
+        }
+    }
+
+    private var catalogStatusLine: String {
+        if let s = viewModel.catalogSummary {
+            let ageStr: String
+            if let d = s.ageDays {
+                ageStr = d == 0 ? "bugün" : "\(d) gün önce"
+            } else {
+                ageStr = "bilinmiyor"
+            }
+            return "EGO kataloğu: \(s.count) durak, \(ageStr) güncellendi."
+        }
+        return "Henüz tam EGO durak listesi indirilmedi (sadece gömülü 2 943 durak)."
     }
 
     // MARK: Quiet hours
