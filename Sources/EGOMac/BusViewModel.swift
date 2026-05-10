@@ -31,8 +31,63 @@ final class BusViewModel: ObservableObject {
     /// Status-bar title callback.
     var onTitleChange: ((String) -> Void)?
 
+    /// Cached line catalog snapshot for the search/list views. Loaded eagerly
+    /// from disk on init so the popover can render before the network call.
+    /// Refreshed in the background via `loadAllLines()`.
+    @Published private(set) var allLines: [Line] = EGOClient.cachedLinesFromDisk()
+    @Published private(set) var allLinesError: String?
+
+    /// Per-line schedule cache, keyed by line code. Populated on demand.
+    @Published private(set) var schedules: [String: LineSchedule] = [:]
+    @Published private(set) var scheduleErrors: [String: String] = [:]
+    private var inflightSchedules = Set<String>()
+
+    // MARK: - Stop catalog (background sweep over all lines)
+
+    /// Progress 0...1 while a full catalog refresh is in flight; nil otherwise.
+    @Published private(set) var catalogProgress: Double?
+    /// Most recent catalog refresh's stop count + last-saved age. Re-read from
+    /// disk after each refresh so Settings always shows fresh stats.
+    @Published private(set) var catalogSummary: (count: Int, ageDays: Int?)?
+    @Published private(set) var catalogError: String?
+    private var catalogRefreshTask: Task<Void, Never>?
+
     init(config: EGOConfig = .default) {
         self.config = config
+    }
+
+    // MARK: - Catalog access (line list, schedules)
+
+    /// Force-refresh the line catalog (network). Updates `allLines` on success,
+    /// `allLinesError` on failure. Safe to call from any view's `.task {}`.
+    func loadAllLines(force: Bool = false) async {
+        do {
+            let fetched = force
+                ? try await client.refreshLineCatalog()
+                : try await client.fetchAllLines()
+            self.allLines = fetched
+            self.allLinesError = nil
+        } catch {
+            self.allLinesError = error.localizedDescription
+            DebugLog.log("loadAllLines failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// On-demand schedule fetch with simple in-flight de-dup. Cached forever
+    /// for the lifetime of the popover; the schedule changes ~weekly so a long
+    /// TTL is fine. UI calls this from `.task(id: line)`.
+    func loadSchedule(line: String) async {
+        if schedules[line] != nil || inflightSchedules.contains(line) { return }
+        inflightSchedules.insert(line)
+        defer { inflightSchedules.remove(line) }
+        do {
+            let s = try await client.fetchLineSchedule(line: line)
+            self.schedules[line] = s
+            self.scheduleErrors[line] = nil
+        } catch {
+            self.scheduleErrors[line] = error.localizedDescription
+            DebugLog.log("schedule \(line) failed: \(error.localizedDescription)")
+        }
     }
 
     // MARK: - Lifecycle
@@ -49,6 +104,59 @@ final class BusViewModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
             }
         }
+        // Hydrate catalog summary from disk + auto-refresh if stale or missing.
+        recomputeCatalogSummary()
+        if catalogShouldRefresh() {
+            Task.detached(priority: .background) { [weak self] in
+                await self?.refreshStopCatalog()
+            }
+        }
+    }
+
+    /// True when the on-disk catalog is missing or older than
+    /// `StopCatalog.refreshInterval` (7 days).
+    private func catalogShouldRefresh() -> Bool {
+        guard let age = StopCatalog.ageOnDisk() else { return true }
+        return age > StopCatalog.refreshInterval
+    }
+
+    private func recomputeCatalogSummary() {
+        guard let s = SearchIndex.diskCatalogSummary() else {
+            catalogSummary = nil
+            return
+        }
+        let days = Int(s.age.map { $0 / 86400 } ?? 0)
+        catalogSummary = (count: s.count, ageDays: days)
+    }
+
+    /// Public entry point — idempotent; if a refresh is already in flight we
+    /// just return its task. Used by the Settings "Yenile" button + launch.
+    func refreshStopCatalog() async {
+        if let task = catalogRefreshTask {
+            await task.value
+            return
+        }
+        let task = Task<Void, Never> { @MainActor [weak self] in
+            guard let self else { return }
+            self.catalogProgress = 0
+            self.catalogError = nil
+            do {
+                _ = try await self.client.fetchFullStopCatalog { [weak self] done, total, _ in
+                    guard let self else { return }
+                    self.catalogProgress = Double(done) / Double(total)
+                }
+                // Pull the freshly-saved catalog into SearchIndex.
+                SearchIndex.shared.reloadStopCatalog()
+                self.recomputeCatalogSummary()
+            } catch {
+                self.catalogError = error.localizedDescription
+                DebugLog.log("catalog refresh failed: \(error.localizedDescription)")
+            }
+            self.catalogProgress = nil
+            self.catalogRefreshTask = nil
+        }
+        catalogRefreshTask = task
+        await task.value
     }
 
     func stop() {
@@ -213,9 +321,15 @@ final class BusViewModel: ObservableObject {
 
     /// Closest watched live ETA across **all** stops drives the menu bar title.
     private func updateTitle() {
-        if let eta = minWatchedEta() {
+        if let secs = minWatchedEtaSeconds() {
             // Keep title VERY short — MacBooks with notch lose long titles.
-            let title = " \(eta)'"
+            // < 60 s: render as seconds ("30s") so an imminent bus doesn't read as "0'".
+            let title: String
+            if secs < 60 {
+                title = " \(secs)s"
+            } else {
+                title = " \(secs / 60)'"
+            }
             DebugLog.log("title → '\(title)'")
             onTitleChange?(title)
         } else {
@@ -264,16 +378,21 @@ final class BusViewModel: ObservableObject {
     }
 
     private func minWatchedEta() -> Int? {
-        // Use the global minimum watched ETA across all stops.
-        var minEta: Int?
+        minWatchedEtaSeconds().map { max(0, $0 / 60) }
+    }
+
+    /// Like `minWatchedEta` but in raw seconds — lets the title show "30s" for
+    /// imminent buses instead of collapsing to "0'".
+    private func minWatchedEtaSeconds() -> Int? {
+        var minSecs: Int?
         for stop in config.stops {
             let watched = stop.watchedSet
             for bus in (busesByStop[stop.stopNo] ?? []) {
-                guard let eta = bus.etaMin, watched.contains(bus.line) else { continue }
-                if minEta.map({ eta < $0 }) ?? true { minEta = eta }
+                guard let secs = bus.etaSeconds, watched.contains(bus.line) else { continue }
+                if minSecs.map({ secs < $0 }) ?? true { minSecs = secs }
             }
         }
-        return minEta
+        return minSecs
     }
 
     private static func validStopNos(from config: EGOConfig) -> [String] {

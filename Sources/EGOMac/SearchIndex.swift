@@ -47,6 +47,43 @@ final class SearchIndex: ObservableObject {
 
     private init() {
         loadStops()
+        loadStopCatalog()
+    }
+
+    /// Total stops indexed for search (embedded + EGO catalog merged).
+    /// Surfaced in Settings.
+    nonisolated static func diskCatalogSummary() -> (count: Int, age: TimeInterval?)? {
+        guard let f = StopCatalog.loadFromDisk() else { return nil }
+        return (f.entries.count, Date().timeIntervalSince(f.savedAt))
+    }
+
+    /// Re-merge the EGO catalog from disk — called after a successful
+    /// `BusViewModel.refreshStopCatalog()` so newly fetched stops become
+    /// searchable immediately.
+    func reloadStopCatalog() {
+        loadStopCatalog()
+        // Drop cached query results so the next search hits the new merged list.
+        stopQueryCache.removeAll()
+    }
+
+    /// Merge EGO catalog entries on top of the embedded blob. EGO names win
+    /// when the same stopNo exists in both. Entries only in the blob (older
+    /// stops EGO has retired) are kept as fallback so search never regresses.
+    private func loadStopCatalog() {
+        guard let file = StopCatalog.loadFromDisk() else { return }
+        // Build a map of EGO entries first.
+        var byStop: [String: IndexedStop] = [:]
+        byStop.reserveCapacity(stops.count + file.entries.count)
+        // Seed with the existing embedded blob so we keep its coverage.
+        for s in stops { byStop[s.result.stopNo] = s }
+        // EGO wins.
+        for e in file.entries {
+            let result = StopSearchResult(stopNo: e.stopNo, name: e.name)
+            byStop[e.stopNo] = IndexedStop(result: result, normalizedName: Self.normalize(e.name))
+        }
+        self.stops = Array(byStop.values)
+        self.stopsLoaded = true
+        DebugLog.log("search: merged catalog \(file.entries.count) EGO + embedded → \(self.stops.count) total")
     }
 
     // MARK: - Stops (bundled OSM snapshot)
@@ -89,6 +126,20 @@ final class SearchIndex: ObservableObject {
         }
         guard n > 0 else { return nil }
         return Data(bytes: dst, count: n)
+    }
+
+    /// Resolve a batch of stop numbers to names in O(N + M).
+    /// Used by `RouteIndex` to label each stop on a line's route. Stops we
+    /// don't know yield no entry (caller falls back to a placeholder).
+    func lookupStopNames(_ stopNos: Set<String>) -> [String: String] {
+        guard !stopNos.isEmpty else { return [:] }
+        var out: [String: String] = [:]
+        out.reserveCapacity(stopNos.count)
+        for indexed in stops where stopNos.contains(indexed.result.stopNo) {
+            out[indexed.result.stopNo] = indexed.result.name
+            if out.count == stopNos.count { break }
+        }
+        return out
     }
 
     /// Search stops by name OR ref. Returns up to `limit` results.

@@ -1,9 +1,22 @@
 import SwiftUI
 import AppKit
 
-private enum PopoverScreen {
+/// Navigation stack for the popover. We deliberately use an array of cases
+/// (instead of a router framework) so the back button just pops the last entry
+/// and the transitions stay snappy. `list` is always at the bottom.
+///
+/// Cases:
+///   - `.list`        — the main bus list (default)
+///   - `.settings`    — user settings
+///   - `.search`      — cross-search across stops & lines
+///   - `.lineDetail`  — tabs: Otobüsler / Duraklar / Saatler / Harita
+///   - `.stopDetail`  — list of buses + lines for a stop discovered via search
+enum PopoverScreen: Equatable {
     case list
     case settings
+    case search
+    case lineDetail(Line)
+    case stopDetail(StopSearchResult)
 }
 
 // MARK: - EGO Cep'te theme tokens
@@ -27,7 +40,10 @@ enum EGOTheme {
 
 struct PopoverView: View {
     @ObservedObject var viewModel: BusViewModel
-    @State private var screen: PopoverScreen = .list
+    @State private var stack: [PopoverScreen] = [.list]
+
+    /// Top of stack — what's currently rendered.
+    private var current: PopoverScreen { stack.last ?? .list }
 
     var body: some View {
         ZStack {
@@ -37,31 +53,66 @@ struct PopoverView: View {
                 .ignoresSafeArea()
 
             Group {
-                switch screen {
+                switch current {
                 case .list:
-                    ListScreen(viewModel: viewModel) {
-                        withAnimation(.spring(duration: 0.3, bounce: 0.16)) {
-                            screen = .settings
-                        }
-                    }
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .leading).combined(with: .opacity),
-                        removal: .move(edge: .leading).combined(with: .opacity)
-                    ))
+                    ListScreen(viewModel: viewModel,
+                               onOpenSettings: { push(.settings) },
+                               onOpenSearch:   { push(.search) })
+                        .transition(slideTransition)
                 case .settings:
-                    SettingsView(viewModel: viewModel) {
-                        withAnimation(.spring(duration: 0.3, bounce: 0.16)) {
-                            screen = .list
-                        }
-                    }
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .trailing).combined(with: .opacity),
-                        removal: .move(edge: .trailing).combined(with: .opacity)
-                    ))
+                    SettingsView(viewModel: viewModel) { pop() }
+                        .transition(slideTransition)
+                case .search:
+                    SearchView(viewModel: viewModel,
+                               onBack: { pop() },
+                               onOpenLine: { push(.lineDetail($0)) },
+                               onOpenStop: { push(.stopDetail($0)) })
+                        .transition(slideTransition)
+                case .lineDetail(let line):
+                    LineDetailView(viewModel: viewModel, line: line) { pop() }
+                        .transition(slideTransition)
+                case .stopDetail(let stop):
+                    StopDetailView(viewModel: viewModel, stop: stop,
+                                   onOpenLine: { push(.lineDetail($0)) },
+                                   onBack: { pop() })
+                        .transition(slideTransition)
                 }
             }
+            .id(currentIdentity)
         }
         .frame(width: 380, height: 540)
+    }
+
+    /// SwiftUI `.transition` needs a stable identity to fire when we swap
+    /// associated-value cases of the same enum (e.g. lineDetail(A) → lineDetail(B)).
+    private var currentIdentity: String {
+        switch current {
+        case .list:                  return "list"
+        case .settings:              return "settings"
+        case .search:                return "search"
+        case .lineDetail(let l):     return "line:\(l.code)"
+        case .stopDetail(let s):     return "stop:\(s.stopNo)"
+        }
+    }
+
+    private var slideTransition: AnyTransition {
+        .asymmetric(
+            insertion: .move(edge: .trailing).combined(with: .opacity),
+            removal:   .move(edge: .leading).combined(with: .opacity)
+        )
+    }
+
+    private func push(_ screen: PopoverScreen) {
+        withAnimation(.spring(duration: 0.3, bounce: 0.16)) {
+            stack.append(screen)
+        }
+    }
+
+    private func pop() {
+        guard stack.count > 1 else { return }
+        withAnimation(.spring(duration: 0.3, bounce: 0.16)) {
+            _ = stack.removeLast()
+        }
     }
 }
 
@@ -70,10 +121,13 @@ struct PopoverView: View {
 private struct ListScreen: View {
     @ObservedObject var viewModel: BusViewModel
     var onOpenSettings: () -> Void
+    var onOpenSearch: () -> Void = {}
 
     var body: some View {
         VStack(spacing: 0) {
-            EGOHeader(viewModel: viewModel, onOpenSettings: onOpenSettings)
+            EGOHeader(viewModel: viewModel,
+                      onOpenSettings: onOpenSettings,
+                      onOpenSearch:   onOpenSearch)
             QuickLookupBar(viewModel: viewModel)
 
             if !viewModel.hasAdhocLookup {
@@ -123,6 +177,7 @@ private struct ListScreen: View {
 private struct EGOHeader: View {
     @ObservedObject var viewModel: BusViewModel
     var onOpenSettings: () -> Void
+    var onOpenSearch: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 10) {
@@ -156,6 +211,10 @@ private struct EGOHeader: View {
                 .buttonStyle(.plain)
                 .help(viewModel.config.notificationsEnabled ? "Bildirimleri kapat" : "Bildirimleri aç")
 
+                if let onOpenSearch {
+                    HeaderIconButton(symbol: "magnifyingglass", action: onOpenSearch)
+                        .help("Hat veya durak ara")
+                }
                 HeaderIconButton(symbol: "gearshape", action: onOpenSettings)
                     .help("Ayarlar")
                 HeaderIconButton(symbol: "power", action: { NSApp.terminate(nil) })
@@ -644,15 +703,22 @@ private struct BusRow: View {
                 }
             }
             .frame(minWidth: 54, alignment: .trailing)
-        } else if let eta = bus.etaMin {
-            let isCritical = eta <= threshold && watched
+        } else if let secs = bus.etaSeconds {
+            // Sub-minute ETAs come back from EGO as "36 sn" — render them in seconds
+            // so a bus 30 s away doesn't look like 30 minutes away. Anything ≥ 60 s
+            // shows as whole minutes like before.
+            let etaMinutes = bus.etaMin ?? 0
+            let isCritical = etaMinutes <= threshold && watched
+            let showSeconds = secs < 60
+            let value = showSeconds ? secs : etaMinutes
+            let unit = showSeconds ? "sn" : "dk"
             VStack(alignment: .trailing, spacing: -1) {
                 HStack(alignment: .firstTextBaseline, spacing: 2) {
-                    Text("\(eta)")
+                    Text("\(value)")
                         .font(.system(size: 18, weight: .bold).monospacedDigit())
                         .foregroundStyle(isCritical ? EGOTheme.red : Color.primary)
                         .contentTransition(.numericText())
-                    Text("dk")
+                    Text(unit)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(isCritical ? EGOTheme.red : Color.secondary)
                 }
@@ -678,23 +744,41 @@ private struct ExpandedSchedule: View {
     let bus: Bus
     let allBusesAtStop: [Bus]
 
-    /// The same EGO response includes scheduled (non-live) rows for the same line —
-    /// they read "Sonraki Hareket Saati İlk Duraktan HH:MM / N dk Sonra" or
-    /// "Bugün İçin Son Hareket Saati HH:MM". We surface those here.
+    /// Lazy fetch of every live bus on this line, against this stop.
+    /// `LineBusesLoader` calls `EGOClient.fetchLineBuses(line:atStop:)` and
+    /// caches the result for the lifetime of this expanded panel.
+    @StateObject private var loader = LineBusesLoader()
+
+    /// The summary response for the stop (`FNC=Otobusler`) returns one row per
+    /// line: a live row OR a scheduled row. The scheduled rows show the next
+    /// departure note for the line, surfaced here.
     private var upcomingDepartures: [String] {
         let line = bus.line
         return allBusesAtStop.compactMap { other in
-            // Same line, scheduled row (no ETA). Skip the row we tapped if it's the same.
-            guard other.line == line, other.etaMin == nil, let note = other.scheduleNote else { return nil }
+            guard other.line == line, other.etaSeconds == nil, let note = other.scheduleNote else { return nil }
             return note
         }
     }
 
-    /// All currently live buses for the same line at this stop, sorted by ETA asc.
-    private var otherLive: [Bus] {
-        allBusesAtStop
-            .filter { $0.line == bus.line && $0.id != bus.id && $0.etaMin != nil }
-            .sorted { ($0.etaMin ?? .max) < ($1.etaMin ?? .max) }
+    /// Live buses fetched on-demand via the per-line endpoint.
+    /// We exclude past-and-tapped duplicates so the tapped row isn't repeated.
+    private var liveOnLine: [Bus] {
+        loader.buses.filter { $0.id != bus.id && $0.etaSeconds != nil }
+    }
+
+    /// Same row pool but for buses that already passed the user's stop.
+    private var pastOnLine: [Bus] {
+        loader.buses.filter { $0.id != bus.id && $0.isPast }
+    }
+
+    /// Unit-aware ETA formatting used by both the main row and this list.
+    fileprivate static func etaText(for b: Bus) -> String {
+        if b.isPast { return "Geçti" }
+        guard let secs = b.etaSeconds else { return "—" }
+        if secs < 60 { return "\(secs) sn" }
+        if secs < 3600 { return "\(secs / 60) dk" }
+        let h = secs / 3600, m = (secs % 3600) / 60
+        return m > 0 ? "\(h) sa \(m) dk" : "\(h) sa"
     }
 
     var body: some View {
@@ -703,30 +787,37 @@ private struct ExpandedSchedule: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 ScheduleSectionLabel(symbol: "info.circle", text: "Hat \(bus.line) detayları")
-
                 detailGrid
             }
 
-            if !otherLive.isEmpty {
-                Divider().opacity(0.3)
-                VStack(alignment: .leading, spacing: 6) {
-                    ScheduleSectionLabel(symbol: "bus.fill", text: "Aynı hattan diğer canlı otobüsler")
-                    ForEach(otherLive) { o in
-                        HStack(spacing: 6) {
-                            Image(systemName: "circle.fill")
-                                .font(.system(size: 5))
-                                .foregroundStyle(.tertiary)
-                            Text("\(o.etaMin ?? 0) dk · \(o.plate ?? "—")")
-                                .font(.system(size: 10.5, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                            if let pos = o.stopPosition {
-                                Text("· durak \(pos)")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.tertiary)
-                            }
-                            Spacer()
-                        }
+            // --- All live buses on this line, fetched from the per-line endpoint ---
+            Divider().opacity(0.3)
+            VStack(alignment: .leading, spacing: 6) {
+                ScheduleSectionLabel(
+                    symbol: "bus.fill",
+                    text: "Hat \(bus.line) üzerindeki canlı otobüsler"
+                )
+
+                if loader.isLoading && loader.buses.isEmpty {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.7)
+                        Text("Hattın diğer otobüsleri yükleniyor…")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
                     }
+                } else if let err = loader.error, loader.buses.isEmpty {
+                    Text("Hat detayı alınamadı: \(err)")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                } else if liveOnLine.isEmpty && pastOnLine.isEmpty {
+                    Text("Şu an hatta sadece taptığınız otobüs canlı.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                } else {
+                    ForEach(liveOnLine) { o in LineBusRow(bus: o) }
+                    ForEach(pastOnLine) { o in LineBusRow(bus: o) }
                 }
             }
 
@@ -747,17 +838,13 @@ private struct ExpandedSchedule: View {
                     }
                 }
             }
-
-            if otherLive.isEmpty && upcomingDepartures.isEmpty {
-                Text("Bu hat için ek planlı kalkış bilgisi yok.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .padding(.top, 2)
-            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(Color.primary.opacity(0.025))
+        .task(id: "\(bus.line)|\(bus.stopNo)") {
+            await loader.load(line: bus.line, atStop: bus.stopNo)
+        }
     }
 
     private var detailGrid: some View {
@@ -790,6 +877,91 @@ private struct ExpandedSchedule: View {
             .replacingOccurrences(of: "Sonraki Hareket Saati İlk Duraktan ", with: "İlk duraktan ")
             .replacingOccurrences(of: "Bugün İçin Son Hareket Saati ", with: "Son sefer · ")
             .trimmingCharacters(in: .whitespaces)
+    }
+}
+
+/// One row in the "hat üzerindeki canlı otobüsler" list. Compact, single-line.
+private struct LineBusRow: View {
+    let bus: Bus
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: bus.isPast ? "checkmark.circle.fill" : "circle.fill")
+                .font(.system(size: 5.5))
+                .foregroundStyle(bus.isPast ? Color.secondary.opacity(0.4) : EGOTheme.red.opacity(0.7))
+
+            // ETA — monospaced so all rows align
+            Text(ExpandedSchedule.etaText(for: bus))
+                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                .foregroundStyle(bus.isPast ? .tertiary : .primary)
+                .frame(width: 56, alignment: .leading)
+
+            // Plate
+            Text(bus.plate ?? "—")
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(.secondary)
+
+            // Stop position (e.g. "42/57" — bus at sequence 42, you're at 57)
+            if let pos = bus.stopPosition {
+                Text("· \(pos)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+
+            // Occupancy chip (text only, no rounded background — per AGENTS.md)
+            if let occ = bus.occupancy, !occ.isEmpty {
+                Text("· \(occ)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(occupancyColor(occ))
+            }
+
+            Spacer()
+        }
+        .opacity(bus.isPast ? 0.65 : 1.0)
+    }
+
+    /// Subtle hue based on the raw occupancy label. Kept text-only on purpose.
+    private func occupancyColor(_ raw: String) -> Color {
+        switch raw.lowercased() {
+        case let s where s.contains("dolu"):  return EGOTheme.red.opacity(0.85)
+        case let s where s.contains("orta"):  return Color.orange.opacity(0.9)
+        case let s where s.contains("boş"):   return Color.green.opacity(0.85)
+        default: return Color.secondary.opacity(0.6)
+        }
+    }
+}
+
+/// Per-popover-open cache for `EGOClient.fetchLineBuses` results.
+/// Lifetime is tied to one `ExpandedSchedule` instance — collapsing the row
+/// destroys it, expanding again triggers a fresh fetch (which is what we want
+/// since the menu bar is usually opened briefly and we want fresh ETAs).
+@MainActor
+private final class LineBusesLoader: ObservableObject {
+    @Published var buses: [Bus] = []
+    @Published var isLoading = false
+    @Published var error: String?
+
+    private let client = EGOClient()
+    private var lastKey: String?
+
+    func load(line: String, atStop stopNo: String) async {
+        let key = "\(line)|\(stopNo)"
+        if lastKey == key && !buses.isEmpty { return }   // already loaded for this combo
+        lastKey = key
+        isLoading = true
+        error = nil
+        do {
+            let fetched = try await client.fetchLineBuses(line: line, atStop: stopNo)
+            // The view may have moved on (different line tapped); only commit if still relevant.
+            guard self.lastKey == key else { return }
+            self.buses = fetched
+            DebugLog.log("line fetch ok: hat=\(line) durak=\(stopNo) → \(fetched.count) satır")
+        } catch {
+            guard self.lastKey == key else { return }
+            self.error = error.localizedDescription
+            DebugLog.log("line fetch fail: hat=\(line) durak=\(stopNo) → \(error.localizedDescription)")
+        }
+        isLoading = false
     }
 }
 
