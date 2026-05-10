@@ -78,17 +78,30 @@ Tüm ayarlar uygulama içinden — **⚙ ikonuna tıkla**. Diskte: `~/.ego-mac/c
 
 ```
 Sources/EGOMac/
-├── App.swift              NSStatusItem + NSPopover entry
-├── Models.swift           Bus / StopProfile / EGOConfig (v1→v2→v3 migration)
-├── EGOClient.swift        Cookie-priming HTTP + parallel fetch + SwiftSoup parse
-├── BusViewModel.swift     @MainActor; polling, dedup, alerts, ad-hoc lookup
-├── PopoverView.swift      EGO Cep'te theme; tap-to-expand schedule; switcher
-├── SettingsView.swift     Crash-safe stops list, search, threshold, quiet hours
-├── SearchIndex.swift      OSM stops + EGO line list (Turkish-fold fuzzy match)
-├── StopsBlob.swift        Auto-generated; embedded OSM snapshot
-├── Notifier.swift         UN + osascript fallback + NSAlert + DebugLog
-├── Config.swift           ~/.ego-mac/config.json IO
-└── VisualEffectView.swift NSVisualEffectView SwiftUI bridge
+├── App.swift                NSStatusItem + NSPopover entry
+├── Models.swift             Bus / Line / LineStop / LineSchedule / RouteSamplePoint / EGOConfig
+├── EGOClient.swift          mblSrv14 JSON client + HareketSaatleri/HatListesi HTML scrapers
+├── BusViewModel.swift       @MainActor; polling, dedup, alerts, ad-hoc lookup, schedule cache
+├── RouteIndex.swift         Sample-based ordered stop list per line, persisted on disk
+├── PassTimePredictor.swift  Heuristic ETA predictor (live anchor + schedule + observed segments)
+├── PopoverView.swift        Navigation stack; bus list; tap-to-expand schedule; switcher
+├── SearchView.swift         Cross-search (lines + stops) with Turkish-fold matching
+├── LineDetailView.swift     Tabs: Otobüsler / Duraklar / Saatler / Harita
+├── StopDetailView.swift     Read-only stop view with line jump + "durak kaydet"
+├── LineMapView.swift        MapKit route map: numbered stops + polyline + heading-rotated buses
+├── MapWindowController.swift Free-floating NSPanel host for the map view
+├── SettingsView.swift       Crash-safe stops list, search, threshold, quiet hours
+├── SearchIndex.swift        OSM stops + EGO line list (Turkish-fold fuzzy match)
+├── StopsBlob.swift          Auto-generated; embedded OSM snapshot
+├── Notifier.swift           UN + osascript fallback + NSAlert + DebugLog
+├── Config.swift             ~/.ego-mac/config.json IO
+└── VisualEffectView.swift   NSVisualEffectView SwiftUI bridge
+
+docs/
+└── api-discovery.md         Reverse-engineered EGO endpoints (live + dead)
+
+scripts/
+└── probe-ego.sh             Endpoint health check (run after EGO releases)
 ```
 
 Detaylı geliştirici notları için → [`CONTRIBUTING.md`](CONTRIBUTING.md).
@@ -97,11 +110,25 @@ Detaylı geliştirici notları için → [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 | Kaynak | Ne için |
 | --- | --- |
-| `POST https://www.ego.gov.tr/otobusnerede` `durak_no=…` | Canlı otobüs + planlı saatler |
-| `POST https://www.ego.gov.tr/AjaxData/HatListesiOtobus` | Tüm bus hat listesi (search) |
-| Embedded OSM snapshot (2943 durak) | Stop name/number search |
+| `GET egocptsrvand.ego.gov.tr/mblSrv14/service.asp?FNC=Otobusler&DURAK=N` | Bir durakta canlı + sonraki kalkışlar (JSON) |
+| `GET egocptsrvand.ego.gov.tr/mblSrv14/service.asp?FNC=Otobus&HAT=X&DURAK=N` | Bir hattaki tüm canlı otobüsler + ETA (JSON) |
+| `POST www.ego.gov.tr/AjaxData/HatListesi` | Hat katalogları — hat arama (HTML option) |
+| `POST www.ego.gov.tr/HareketSaatleri` `hat_no1=X` | Hat saatleri + metadata (HTML, regex parse) |
+| Embedded OSM snapshot (2 943 durak) | Stop name/number search + harita marker isimleri |
 
-EGO mobile API (`88.255.141.70/mobil/iphonenew/*`) kalıcı olarak HTTP 410/504 dönüyor; OSM + HatListesiOtobus ile ilerliyoruz.
+Detaylar: [`docs/api-discovery.md`](docs/api-discovery.md). Endpoint sağlık testi: `bash scripts/probe-ego.sh`.
+
+Mobil app'in pcap'inden bulunan endpoint host'u `egocptsrvand.ego.gov.tr` (iPhone'da `pymobiledevice3 pcap --process Runner` ile doğrulandı). Eski IP-bazlı endpoint (`88.255.141.66/mblSrv*/service.asp`) artık 504. APK'da bulunan `/hibrit/action.asp` ailesi 200+0b dönüyor (drift watcher: `probe-ego.sh`).
+
+## Yeni özellikler
+
+- **Hat ve durak araması** (menü bar arama ikonu): Türkçe karakter normalizasyonlu fuzzy match — `kizilay`, `Kızılay`, `KIZILAY` aynı sonucu döner.
+- **Hat detay**: Otobüsler / Duraklar / Saatler / Harita sekmeleri.
+  - **Otobüsler**: hattaki her canlı otobüs, kullanıcının durağına ETA + plaka + doluluk.
+  - **Duraklar**: sıralı durak listesi (canlı gözlemlerden öğrenilir), her durak için **tahmini geçiş saati** (HH:mm).
+  - **Saatler**: Hafta içi / Cumartesi / Pazar tarifeleri (bugün vurgulu).
+  - **Harita**: ayrı pencerede, numaralı durak marker'ları + canlı otobüs ikonları (heading rotasyonu) + 20 sn'lik canlı yenileme.
+- **Tahmini geçiş saati**: üç katmanlı — (1) canlı otobüsten anchor, (2) gözlemsel segment ortalaması, (3) tarife süresi heuristici.
 
 ## Sorun giderme
 
